@@ -1,0 +1,3 @@
+
+dependencies: cpanfile
+	@cpanm --installdeps .

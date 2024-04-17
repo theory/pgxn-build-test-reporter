@@ -1,0 +1,124 @@
+#!/usr/bin/env perl -w
+
+use strict;
+use warnings;
+use v5.30;
+use IPC::Run qw(run);
+use Config ();
+use Symbol qw(gensym);
+use JSON;
+use TOML::Parser;
+
+sub _run;
+
+# my $fn = shift || die "Usage: $0 FILE\n";
+# open my $fh, '<:utf8', $fn or die "Cannot open $fn: $!\n";
+
+say "# Setup";
+
+# Find pg_config.
+my $pg_config = $ENV{PG_CONFIG} || do {
+    run [qw(which pg_config)], \undef, \my $out
+        or die "pg_config not found; did you forget to run pg-start?\n";
+    chomp $out;
+    $out;
+};
+say "## Using $pg_config";
+
+# Determine the Postgres version.
+my $pgv = $ENV{PGVERSION} || do {
+    run [$pg_config, '--version'], \undef, \my $out or exit $? >> 8;
+    $out =~ /(\d+)/ or die "No version found in $pg_config --version output:\n$out";
+    $1;
+};
+say "## Using PostgreSQL $pgv\n";
+
+say encode_json build('semver', '0.32.1');
+
+sub build {
+    my ($name, $version) = @_;
+    my $record = {
+        package  => $name,
+        version  => $version,
+        os       => $^O,
+        postgres => $pgv,
+        arch     => $Config::Config{myarchname},
+        success  => JSON::false,
+        steps    => [],
+    };
+    if (-e 'Cargo.toml') {
+        say "## Building $name $version with pgrx";
+        _run $record, 'ls -lAh', qw(ls -lAh);
+        pgrx_build($record);
+    } elsif (-e 'Makefile' || -e 'makefile' || -e 'GNUmakefile' || -e 'Configure' || -e 'configure') {
+        say "## Building $name $version with pgxs";
+        _run $record, 'ls -lAh', qw(ls -lAh);
+        pgxs_build($record);
+    } else {
+        $record->{reason} = "Could not determine build pipeline";
+    }
+    print "\n";
+    return $record;
+}
+
+sub pgxs_build {
+    my $rec = shift;
+    $rec->{pipeline} = 'pgxs';
+    if (-e 'Configure') {
+        return unless _run $rec, 'configure', qw(./Configure)
+    } elsif (-e 'configure') {
+        return unless _run $rec, 'configure', qw(./configure)
+    }
+    my @vars = ("PG_CONFIG=$pg_config");
+    return unless _run $rec, 'make', qw(make), @vars;
+    return unless _run $rec, 'make install', qw(make install), @vars;
+    return unless _run $rec, 'make installcheck', qw(make installcheck), @vars;
+    $rec->{success} = JSON::true;
+}
+
+sub pgrx_build {
+    local $ENV{CARGO_TERM_COLOR} = 'never';
+    my $rec = shift;
+    $rec->{pipeline} = 'pgrx';
+    my $cfg = TOML::Parser->new->parse_file('Cargo.toml');
+
+    # Look for pgrx.
+    my $pgrxv = $cfg->{dependencies}{pgrx} || die "pgrx not found in Cargo.toml\n";
+    $pgrxv =~ s/^=//;
+
+    return unless _run $rec, 'cargo install cargo-pgrx',
+        qw(cargo install --locked cargo-pgrx --version), $pgrxv;
+
+    return unless _run $rec, 'cargo pgrx init',
+        qw(cargo pgrx init), "--pg$pgv=$pg_config";
+
+    return unless _run $rec, 'cargo pgrx package',
+        qw(cargo pgrx package --test --pg-config), $pg_config;
+
+    return unless _run $rec, 'cargo test',
+        qw(cargo test --all --no-default-features --features),
+        "pg$pgv pg_test", qw(-- --nocapture);
+
+    $rec->{success} = JSON::true;
+}
+
+sub _run {
+    my ($rec, $name, @cmd) = @_;
+    print "### $name...";
+    run \@cmd, \undef, '>pipe', (my $pipe = gensym), '2>&1';
+    push @{ $rec->{steps} } => {
+        name    => $name,
+        command => \@cmd,
+        exit    => $? >> 8,
+        output  => [ map { chomp; $_ } <$pipe> ],
+    };
+
+    if ($? == 0) {
+        say "ok";
+        return 1
+    }
+
+    say "failed";
+    $rec->{reason} = "$name failed";
+    return 0;
+}
