@@ -19,6 +19,7 @@ use Getopt::Long;
 use WWW::PGXN;
 use File::Path qw(make_path);
 use File::Basename;
+use Parallel::Subs;
 
 sub _run;
 
@@ -59,14 +60,20 @@ sub go {
     make_path $self->{work_dir};
     chdir $self->{work_dir} || die "Cannot chdir into $self->{work_dir}\n";
 
+    my $callback = sub { say {$out} encode_json shift };
+    my $p = Parallel::Subs->new;
+
+    my $i = 0;
     while (<$in>) {
+        $i++;
         chomp;
         my ($name, $version) = split /\s+/;
         die "Error parsing $_\n" unless $name && $version;
-        my $rec = $self->pgxn_build($name, $version);
-        say {$out} encode_json $rec;
-        return;
+        $p->add(sub { $self->pgxn_build($name, $version) }, $callback);
+        last if $i == 4;
     }
+
+    $p->wait_for_all;
 }
 
 sub pgxn_build {
