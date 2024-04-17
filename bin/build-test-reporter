@@ -21,33 +21,36 @@ use File::Path qw(make_path);
 use File::Basename;
 use Parallel::Subs;
 
-sub _run;
-
 sub new {
-    say "# Setup";
     Getopt::Long::Configure(qw(no_ignore_case bundling));
-    my $self = {
+    my $self = bless {
         input_file  => 'data/distributions.txt',
         output_file => 'data/results.txt',
         work_dir    => 'work',
+        verbose     => 1,
         pg_config   => $ENV{PG_CONFIG},
         pgxn        => WWW::PGXN->new( url => 'https://api.pgxn.org/' ),
-    };
+    } => __PACKAGE__;
     Getopt::Long::GetOptions(
         @_,
         'input-file|in=s'   => \$self->{input_file},
         'output-file|out=s' => \$self->{output_file},
-        'work-dir|dir=s'    => \$self->{output_file},
-        'verbose|v+'        => \$self->{work_dir},
+        'work-dir|dir=s'    => \$self->{work_dir},
+        'verbose|v+'        => \$self->{verbose},
     ) or die "Usage: $0 --in INPUT_FILE --out OUTPUT_FILE\n";
 
     $self->{pg_config} ||= _find_pg_config();
-    say "## Using $self->{pg_config}";
+    $self->status(2, "## Using $self->{pg_config}");
 
     $self->{pg_version} = _pg_version($self->{pg_config});
-    say "## Using PostgreSQL $self->{pg_version}\n";
+    $self->status(2, "## Using PostgreSQL $self->{pg_version}\n");
 
-    bless $self => __PACKAGE__;
+    return $self;
+}
+
+sub status {
+    my ($self, $lvl, $msg) = @_;
+    say $msg unless $lvl > $self->{verbose};
 }
 
 sub go {
@@ -60,8 +63,12 @@ sub go {
     make_path $self->{work_dir};
     chdir $self->{work_dir} || die "Cannot chdir into $self->{work_dir}\n";
 
-    my $callback = sub { say {$out} encode_json shift };
-    my $p = Parallel::Subs->new;
+    my $callback = sub {
+        my $rec = shift;
+        say {$out} encode_json $rec;
+        $self->status(1, "## $rec->{package} " . ($rec->{success} ? "ok" : "not ok"))
+    };
+    my $p = Parallel::Subs->new(max_process => 16);
 
     my $i = 0;
     while (<$in>) {
@@ -78,9 +85,9 @@ sub go {
 
 sub pgxn_build {
     my ($self, $name, $version) = @_;
-    say "## Build $name $version";
+    $self->status(1, "## Build $name $version");
     my $dist = $self->{pgxn}->get_distribution($name, $version) or do {
-        say "### Cannot find $name $version on PGXN; skipping";
+        $self->status(0, "### Cannot find $name $version on PGXN; skipping");
         return;
     };
 
@@ -94,11 +101,11 @@ sub pgxn_build {
         steps    => [],
     };
 
-    say "### Downloading $name $version";
+    $self->status(2, "### Downloading $name $version");
     $dist->download_to('.');
 
     my $file = basename $dist->download_path;
-    return $rec unless _run $rec, "unzip $file", qw(unzip -o), $file;
+    return $rec unless $self->_run($rec, "unzip $file", qw(unzip -o), $file);
     my $dir = $file =~ s/\.zip$//r;
     chdir $dir or die "Cannot chdir into $dir: $!\n";
     return $self->build($rec);
@@ -113,7 +120,6 @@ sub build {
     } else {
         $rec->{reason} = "Could not determine build pipeline";
     }
-    print "\n";
     return $rec;
 }
 
@@ -121,14 +127,14 @@ sub pgxs_build {
     my ($self, $rec) = @_;
     $rec->{pipeline} = 'pgxs';
     if (-e 'Configure') {
-        return unless _run $rec, 'configure', qw(./Configure)
+        return unless $self->_run($rec, 'configure', qw(./Configure));
     } elsif (-e 'configure') {
-        return unless _run $rec, 'configure', qw(./configure)
+        return unless $self->_run($rec, 'configure', qw(./configure));
     }
     my @vars = ("PG_CONFIG=$self->{pg_config}");
-    return unless _run $rec, 'make', qw(make), @vars;
-    return unless _run $rec, 'make install', qw(make install), @vars;
-    return unless _run $rec, 'make installcheck', qw(make installcheck), @vars;
+    return unless $self->_run($rec, 'make', qw(make), @vars);
+    return unless $self->_run($rec, 'make install', qw(make install), @vars);
+    return unless $self->_run($rec, 'make installcheck', qw(make installcheck), @vars);
     $rec->{success} = JSON::true;
 }
 
@@ -145,25 +151,33 @@ sub pgrx_build {
     my $pgrxv = $cfg->{dependencies}{pgrx} || die "pgrx not found in Cargo.toml\n";
     $pgrxv =~ s/^=//;
 
-    return unless _run $rec, 'cargo install cargo-pgrx',
-        qw(cargo install --locked cargo-pgrx --version), $pgrxv;
+    return unless $self->_run(
+        $rec, 'cargo install cargo-pgrx',
+        qw(cargo install --locked cargo-pgrx --version), $pgrxv,
+    );
 
-    return unless _run $rec, 'cargo pgrx init',
-        qw(cargo pgrx init), "--pg$self->{pg_version}=$self->{pg_config}";
+    return unless $self->_run(
+        $rec, 'cargo pgrx init',
+        qw(cargo pgrx init), "--pg$self->{pg_version}=$self->{pg_config}",
+    );
 
-    return unless _run $rec, 'cargo pgrx package',
-        qw(cargo pgrx package --test --pg-config), $self->{pg_config};
+    return unless $self->_run(
+        $rec, 'cargo pgrx package',
+        qw(cargo pgrx package --test --pg-config), $self->{pg_config},
+    );
 
-    return unless _run $rec, 'cargo test',
+    return unless $self->_run(
+        $rec, 'cargo test',
         qw(cargo test --all --no-default-features --features),
-        "pg$self->{pg_version} pg_test", qw(-- --nocapture);
+        "pg$self->{pg_version} pg_test", qw(-- --nocapture),
+    );
 
     $rec->{success} = JSON::true;
 }
 
 sub _run {
-    my ($rec, $name, @cmd) = @_;
-    print "### $name...";
+    my ($self, $rec, $name, @cmd) = @_;
+    $self->status(2,  "### $rec->{package}: $name");
     run \@cmd, \undef, '>pipe', (my $pipe = gensym), '2>&1';
     push @{ $rec->{steps} } => {
         name    => $name,
@@ -172,19 +186,14 @@ sub _run {
         output  => [ map { chomp; $_ } <$pipe> ],
     };
 
-    if ($? == 0) {
-        say "ok";
-        return 1
-    }
-
-    say "failed";
+    return 1 if $? == 0;
+    $self->status(2, "### $rec->{package}: $name failed");
     $rec->{reason} = "$name failed";
     return 0;
 }
 
 sub _find_pg_config {
-    run [qw(which pg_config)], \undef, \my $out
-        or die "pg_config not found; did you forget to run pg-start?\n";
+    run [qw(which pg_config)], \undef, \my $out or die "pg_config not found\n";
     chomp $out;
     return $out;
 }
