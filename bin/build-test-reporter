@@ -16,6 +16,9 @@ use Symbol qw(gensym);
 use JSON;
 use TOML::Parser;
 use Getopt::Long;
+use WWW::PGXN;
+use File::Path qw(make_path);
+use File::Basename;
 
 sub _run;
 
@@ -25,13 +28,16 @@ sub new {
     my $self = {
         input_file  => 'data/distributions.txt',
         output_file => 'data/results.txt',
+        work_dir    => 'work',
         pg_config   => $ENV{PG_CONFIG},
+        pgxn        => WWW::PGXN->new( url => 'https://api.pgxn.org/' ),
     };
     Getopt::Long::GetOptions(
         @_,
         'input-file|in=s'   => \$self->{input_file},
         'output-file|out=s' => \$self->{output_file},
-        'verbose|v+'        => \$self->{verbose},
+        'work-dir|dir=s'    => \$self->{output_file},
+        'verbose|v+'        => \$self->{work_dir},
     ) or die "Usage: $0 --in INPUT_FILE --out OUTPUT_FILE\n";
 
     $self->{pg_config} ||= _find_pg_config();
@@ -45,10 +51,37 @@ sub new {
 
 sub go {
     my $self = shift;
-    say encode_json $self->build('semver', '0.32.1');
+    open my $in, '<:encoding(UTF-8)', $self->{input_file}
+        or die "Cannot open $self->{input_file}: $!\n";
+    open my $out, '>raw', $self->{output_file}
+        or die "Cannot open $self->{output_file}: $!\n";
+
+    make_path $self->{work_dir};
+    chdir $self->{work_dir} || die "Cannot chdir into $self->{work_dir}\n";
+
+    while (<$in>) {
+        chomp;
+        my ($name, $version) = split /\s+/;
+        die "Error parsing $_\n" unless $name && $version;
+        $self->pgxn_build($name, $version);
+        return;
+    }
 }
 
-sub build {
+sub pgxn_build {
+    my ($self, $name, $version) = @_;
+    my $dist = $self->{pgxn}->get_distribution($name, $version) or do {
+        say "Cannot find $name $version on PGXN; skipping";
+        next;
+    };
+
+    say "## Downloading $name $version";
+    $dist->download_to('.');
+    my $file = basename $dist->download_path;
+    say $file;
+}
+
+sub build {q
     my ($self, $name, $version) = @_;
     my $record = {
         package  => $name,

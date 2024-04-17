@@ -1,3 +1,2 @@
-
 dependencies: cpanfile
-	@cpanm --installdeps .
+	@cpanm --installdeps --notest .
