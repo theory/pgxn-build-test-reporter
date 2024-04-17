@@ -63,27 +63,21 @@ sub go {
         chomp;
         my ($name, $version) = split /\s+/;
         die "Error parsing $_\n" unless $name && $version;
-        $self->pgxn_build($name, $version);
+        my $rec = $self->pgxn_build($name, $version);
+        say {$out} encode_json $rec;
         return;
     }
 }
 
 sub pgxn_build {
     my ($self, $name, $version) = @_;
+    say "## Build $name $version";
     my $dist = $self->{pgxn}->get_distribution($name, $version) or do {
-        say "Cannot find $name $version on PGXN; skipping";
-        next;
+        say "### Cannot find $name $version on PGXN; skipping";
+        return;
     };
 
-    say "## Downloading $name $version";
-    $dist->download_to('.');
-    my $file = basename $dist->download_path;
-    say $file;
-}
-
-sub build {q
-    my ($self, $name, $version) = @_;
-    my $record = {
+    my $rec = {
         package  => $name,
         version  => $version,
         os       => $^O,
@@ -92,19 +86,28 @@ sub build {q
         success  => JSON::false,
         steps    => [],
     };
+
+    say "### Downloading $name $version";
+    $dist->download_to('.');
+
+    my $file = basename $dist->download_path;
+    return $rec unless _run $rec, "unzip $file", qw(unzip -o), $file;
+    my $dir = $file =~ s/\.zip$//r;
+    chdir $dir or die "Cannot chdir into $dir: $!\n";
+    return $self->build($rec);
+}
+
+sub build {
+    my ($self, $rec) = @_;
     if (-e 'Cargo.toml') {
-        say "## Building $name $version with pgrx";
-        _run $record, 'ls -lAh', qw(ls -lAh);
-        $self->pgrx_build($record);
+        $self->pgrx_build($rec);
     } elsif (-e 'Makefile' || -e 'makefile' || -e 'GNUmakefile' || -e 'Configure' || -e 'configure') {
-        say "## Building $name $version with pgxs";
-        _run $record, 'ls -lAh', qw(ls -lAh);
-        $self->pgxs_build($record);
+        $self->pgxs_build($rec);
     } else {
-        $record->{reason} = "Could not determine build pipeline";
+        $rec->{reason} = "Could not determine build pipeline";
     }
     print "\n";
-    return $record;
+    return $rec;
 }
 
 sub pgxs_build {
