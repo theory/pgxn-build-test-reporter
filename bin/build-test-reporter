@@ -20,15 +20,25 @@ use WWW::PGXN;
 use File::Path qw(make_path);
 use File::Basename;
 use Parallel::Subs;
+use File::Temp;
+use POSIX qw(strftime);
+
+BEGIN {
+     local $SIG{__WARN__} = sub {
+        warn @_ if $_[0] !~ /Possible precedence issue/
+    };
+    require IPC::Semaphore::Concurrency;
+}
 
 sub new {
     Getopt::Long::Configure(qw(no_ignore_case bundling));
     my $self = bless {
         input_file  => 'data/distributions.txt',
-        output_file => 'data/results.txt',
+        output_file => strftime("data/%Y-%m-%d-$Config::Config{myarchname}.txt", gmtime),
         work_dir    => 'work',
         verbose     => 1,
         pg_config   => $ENV{PG_CONFIG},
+        lock_file   => File::Temp->new,
         pgxn        => WWW::PGXN->new( url => 'https://api.pgxn.org/' ),
     } => __PACKAGE__;
     Getopt::Long::GetOptions(
@@ -44,6 +54,11 @@ sub new {
 
     $self->{pg_version} = _pg_version($self->{pg_config});
     $self->status(2, "## Using PostgreSQL $self->{pg_version}\n");
+
+    $self->{lock_file}->close;
+    $self->{semaphore} = IPC::Semaphore::Concurrency->new(
+        $self->{lock_file}->filename,
+    );
 
     return $self;
 }
@@ -66,7 +81,8 @@ sub go {
     my $callback = sub {
         my $rec = shift;
         say {$out} encode_json $rec;
-        $self->status(1, "## $rec->{package} " . ($rec->{success} ? "ok" : "not ok"))
+        $self->status(1, "## $rec->{package} " . ($rec->{success} ? "ok" : "not ok"));
+        chdir $self->{work_dir} || die "Cannot chdir into $self->{work_dir}\n";
     };
     my $p = Parallel::Subs->new(max_process => 16);
 
@@ -77,7 +93,6 @@ sub go {
         my ($name, $version) = split /\s+/;
         die "Error parsing $_\n" unless $name && $version;
         $p->add(sub { $self->pgxn_build($name, $version) }, $callback);
-        last if $i == 4;
     }
 
     $p->wait_for_all;
@@ -107,7 +122,10 @@ sub pgxn_build {
     my $file = basename $dist->download_path;
     return $rec unless $self->_run($rec, "unzip $file", qw(unzip -o), $file);
     my $dir = $file =~ s/\.zip$//r;
-    chdir $dir or die "Cannot chdir into $dir: $!\n";
+    chdir $dir or do {
+        $rec->{reason} = "Cannot chdir into $dir: $!";
+        return $rec;
+    };
     return $self->build($rec);
 }
 
@@ -141,6 +159,10 @@ sub pgxs_build {
 sub pgrx_build {
     my ($self, $rec) = @_;
 
+    # PGRX builds must not be concurrent, because they might require different
+    # versions that will stomp all over each other. So wait to aquire a lock.
+    $self->{semaphore}->acquire(0, 1);
+
     local $ENV{CARGO_TERM_COLOR} = 'never';
     local $ENV{NO_COLOR} = 'true';
 
@@ -148,7 +170,10 @@ sub pgrx_build {
     my $cfg = TOML::Parser->new->parse_file('Cargo.toml');
 
     # Look for pgrx.
-    my $pgrxv = $cfg->{dependencies}{pgrx} || die "pgrx not found in Cargo.toml\n";
+    my $pgrxv = $cfg->{dependencies}{pgrx} || do {
+        $rec->{reason} = "pgrx not found in Cargo.toml";
+        return $rec;
+    };
     $pgrxv =~ s/^=//;
 
     return unless $self->_run(

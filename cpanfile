@@ -5,3 +5,4 @@ requires "Net::SSLeay" => "1.49";
 requires "Parallel::Subs" => "0";
 requires "TOML::Parser" => "0";
 requires "WWW::PGXN" => "0";
+requires "IPC::Semaphore::Concurrency" => "0";
