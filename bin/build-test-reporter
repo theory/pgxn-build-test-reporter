@@ -33,13 +33,12 @@ BEGIN {
 sub new {
     Getopt::Long::Configure(qw(no_ignore_case bundling));
     my $self = bless {
-        input_file  => 'data/distributions.txt',
-        output_file => strftime("data/%Y-%m-%d-$Config::Config{myarchname}.txt", gmtime),
-        work_dir    => 'work',
-        verbose     => 1,
-        pg_config   => $ENV{PG_CONFIG},
-        lock_file   => File::Temp->new,
-        pgxn        => WWW::PGXN->new( url => 'https://api.pgxn.org/' ),
+        input_file => 'data/distributions.txt',
+        work_dir   => 'work',
+        verbose    => 1,
+        pg_config  => $ENV{PG_CONFIG},
+        lock_file  => File::Temp->new,
+        pgxn       => WWW::PGXN->new(url => 'https://api.pgxn.org/'),
     } => __PACKAGE__;
     Getopt::Long::GetOptions(
         @_,
@@ -55,6 +54,14 @@ sub new {
     $self->{pg_version} = _pg_version($self->{pg_config});
     $self->status(2, "## Using PostgreSQL $self->{pg_version}\n");
 
+    # Set up the default output file.
+    $self->{output_file} ||= strftime(
+        "data/%Y-%m-%d-pg$self->{pg_version}-$Config::Config{myarchname}.log",
+        gmtime
+    );
+    $self->status(2, "## Writing reults to $self->{output_file}\n");
+
+    # Set up the semaphor to limit pgrx builds to one at a time.
     $self->{lock_file}->close;
     $self->{semaphore} = IPC::Semaphore::Concurrency->new(
         $self->{lock_file}->filename,
@@ -86,9 +93,7 @@ sub go {
     };
     my $p = Parallel::Subs->new(max_process => 16);
 
-    my $i = 0;
     while (<$in>) {
-        $i++;
         chomp;
         my ($name, $version) = split /\s+/;
         die "Error parsing $_\n" unless $name && $version;
@@ -197,6 +202,38 @@ sub pgrx_build {
         "pg$self->{pg_version} pg_test", qw(-- --nocapture),
     );
 
+    return unless $self->_run(
+        $rec, 'cargo pgrx install',
+        qw(cargo pgrx install --test --pg-config), $self->{pg_config},
+    );
+
+    my $file = 'Makefile';
+    if (-e $file) {
+        # Look for signs of installcheck in the Makefile.
+        open my $fh, '<:raw', $file or die "Cannot open $file: $!\n";
+        my $regress;
+        while (<$fh>) {
+            next unless /^REGRESS\s*=/ || /^installcheck:/;
+            $regress = 1;
+            last;
+        }
+        close $fh;
+
+        if ($regress) {
+            my @vars = ("PG_CONFIG=$self->{pg_config}");
+            $self->_run(
+                $rec, 'make installcheck', qw(make installcheck), @vars,
+            ) || do {
+                # Try to find regression.diffs.
+                $self->_run(
+                    $rec, 'cat regressin.diffs',
+                    qw(find . -name regression.diffs -exec cat {} +),
+                );
+                return;
+            };
+        }
+    }
+
     $rec->{success} = JSON::true;
 }
 
@@ -208,7 +245,7 @@ sub _run {
         name    => $name,
         command => \@cmd,
         exit    => $? >> 8,
-        output  => [ map { chomp; $_ } <$pipe> ],
+        output  => [ map { chomp; s/\e\[[0-9;]*m//g; $_ } <$pipe> ],
     };
 
     return 1 if $? == 0;
