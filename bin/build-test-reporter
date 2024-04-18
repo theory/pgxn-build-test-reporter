@@ -22,6 +22,7 @@ use File::Basename;
 use Parallel::Subs;
 use File::Temp;
 use POSIX qw(strftime);
+use Archive::Zip qw(:ERROR_CODES);
 
 BEGIN {
      local $SIG{__WARN__} = sub {
@@ -81,6 +82,7 @@ sub go {
         or die "Cannot open $self->{input_file}: $!\n";
     open my $out, '>raw', $self->{output_file}
         or die "Cannot open $self->{output_file}: $!\n";
+    $out->autoflush;
 
     make_path $self->{work_dir};
     chdir $self->{work_dir} || die "Cannot chdir into $self->{work_dir}\n";
@@ -89,7 +91,6 @@ sub go {
         my $rec = shift;
         say {$out} encode_json $rec;
         $self->status(1, "## $rec->{package} " . ($rec->{success} ? "ok" : "not ok"));
-        chdir $self->{work_dir} || die "Cannot chdir into $self->{work_dir}\n";
     };
     my $p = Parallel::Subs->new(max_process => 16);
 
@@ -121,17 +122,65 @@ sub pgxn_build {
         steps    => [],
     };
 
-    $self->status(2, "### Downloading $name $version");
-    $dist->download_to('.');
-
     my $file = basename $dist->download_path;
-    return $rec unless $self->_run($rec, "unzip $file", qw(unzip -o), $file);
+    if (-e $file) {
+        $self->status(2, "### $name: $file already downloaded");
+    } else {
+        $self->status(2, "### $name: Downloading $file");
+        $dist->download_to('.');
+    }
+
+    return $rec unless $self->unzip($rec, $file);
     my $dir = $file =~ s/\.zip$//r;
     chdir $dir or do {
         $rec->{reason} = "Cannot chdir into $dir: $!";
         return $rec;
     };
     return $self->build($rec);
+}
+
+sub unzip {
+    my ($self, $rec, $zip_path) = @_;
+    $self->status(2, "### $rec->{package}: unzip $zip_path");
+
+    my @out = ("Archive:  $zip_path");
+    Archive::Zip::setErrorHandler(sub { push @out, @_ });
+    my $step = {
+        name    => "unzip $zip_path",
+        command => ['Archive::Zip->new->read($zip_path)'],
+        exit    => 1,
+        output  => \@out,
+    };
+    push @{ $rec->{steps} } => $step;
+
+    my $zip = Archive::Zip->new;
+    if ($zip->read($zip_path)!= AZ_OK) {
+        $rec->{reason} = "Error reading $zip_path";
+        return;
+    }
+
+    foreach my $member ($zip->members) {
+        my $fn = $member->fileName;
+        push @out =>  "    $fn";
+
+        if ($member->isSymbolicLink) {
+            # Delete existing so Archive::Zip won't fail to create it.
+            push @out => "WARNING: Cannot unlink $fn: $!" if -e $fn && !unlink $fn;
+        } else {
+            # Make sure the member is readable by everyone.
+            $member->unixFileAttributes( $member->isDirectory ? 0755 : 0644 );
+        }
+
+        if ($member->extractToFileNamed($fn) != AZ_OK) {
+            $rec->{reason} = "Error extracing $fn";
+            return;
+        }
+    }
+
+    # Success.
+    $step->{exit} = 0;
+
+    return 1;
 }
 
 sub build {
@@ -150,9 +199,9 @@ sub pgxs_build {
     my ($self, $rec) = @_;
     $rec->{pipeline} = 'pgxs';
     if (-e 'Configure') {
-        return unless $self->_run($rec, 'configure', qw(./Configure));
+        return unless $self->_run($rec, 'sh Configure', qw(sh Configure));
     } elsif (-e 'configure') {
-        return unless $self->_run($rec, 'configure', qw(./configure));
+        return unless $self->_run($rec, 'sh configure', qw(sh configure));
     }
     my @vars = ("PG_CONFIG=$self->{pg_config}");
     return unless $self->_run($rec, 'make', qw(make), @vars);
