@@ -2,4 +2,7 @@ dependencies: cpanfile
 	@cpanm --installdeps --notest .
 
 run: bin/build-test-reporter
-	@$< -vv
+	@$< -v
+
+load: sql/load.sql
+	@psql -f $<

@@ -144,7 +144,7 @@ sub unzip {
     $self->status(2, "### $rec->{package}: unzip $zip_path");
 
     my @out = ("Archive:  $zip_path");
-    Archive::Zip::setErrorHandler(sub { push @out, @_ });
+    Archive::Zip::setErrorHandler(sub { push @out, map { chomp; $_ } @_ });
     my $step = {
         name    => "unzip $zip_path",
         command => ['Archive::Zip->new->read($zip_path)'],
@@ -161,6 +161,11 @@ sub unzip {
 
     foreach my $member ($zip->members) {
         my $fn = $member->fileName;
+        if ($fn =~ m{/[.]git(:?hub|attributes|ignore)?\b}) {
+            push @out =>  "    SKIPPING $fn";
+            next;
+        }
+
         push @out =>  "    $fn";
 
         if ($member->isSymbolicLink) {
@@ -172,7 +177,7 @@ sub unzip {
         }
 
         if ($member->extractToFileNamed($fn) != AZ_OK) {
-            $rec->{reason} = "Error extracing $fn";
+            $rec->{reason} = "Error extracting $fn";
             return;
         }
     }
@@ -187,7 +192,7 @@ sub build {
     my ($self, $rec) = @_;
     if (-e 'Cargo.toml') {
         $self->pgrx_build($rec);
-    } elsif (-e 'Makefile' || -e 'makefile' || -e 'GNUmakefile' || -e 'Configure' || -e 'configure') {
+    } elsif (-e 'Makefile' || -e 'makefile' || -e 'GNUmakefile' || -e 'Configure' || -e 'configure' || -e 'CMakeLists.txt') {
         $self->pgxs_build($rec);
     } else {
         $rec->{reason} = "Could not determine build pipeline";
@@ -202,6 +207,8 @@ sub pgxs_build {
         return unless $self->_run($rec, 'sh Configure', qw(sh Configure));
     } elsif (-e 'configure') {
         return unless $self->_run($rec, 'sh configure', qw(sh configure));
+    } elsif (-e 'CMakeLists.txt') {
+        return unless $self->_run($rec, 'cmake .', qw(cmake .));
     }
     my @vars = ("PG_CONFIG=$self->{pg_config}");
     return unless $self->_run($rec, 'make', qw(make), @vars);
@@ -225,6 +232,8 @@ sub pgrx_build {
 
     # Look for pgrx.
     my $pgrxv = $cfg->{dependencies}{pgrx} || do {
+        # Maybe it's pgxs.
+        return $self->pgxs_build($rec) if -e 'Makefile';
         $rec->{reason} = "pgrx not found in Cargo.toml";
         return $rec;
     };
