@@ -19,7 +19,7 @@ use Getopt::Long;
 use WWW::PGXN;
 use File::Path qw(make_path);
 use File::Basename;
-use Parallel::Subs;
+use Parallel::WorkUnit;
 use File::Temp;
 use POSIX qw(strftime);
 use Archive::Zip qw(:ERROR_CODES);
@@ -92,16 +92,16 @@ sub go {
         say {$out} encode_json $rec;
         $self->status(1, "## $rec->{package} " . ($rec->{success} ? "ok" : "not ok"));
     };
-    my $p = Parallel::Subs->new(max_process => 16);
+    my $p = Parallel::WorkUnit->new(max_children => 16);
 
     while (<$in>) {
         chomp;
         my ($name, $version) = split /\s+/;
         die "Error parsing $_\n" unless $name && $version;
-        $p->add(sub { $self->pgxn_build($name, $version) }, $callback);
+        $p->queue(sub { $self->pgxn_build($name, $version) }, $callback);
     }
 
-    $p->wait_for_all;
+    $p->waitall;
 }
 
 sub pgxn_build {
