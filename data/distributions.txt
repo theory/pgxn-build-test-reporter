@@ -46,7 +46,7 @@ debversion 1.1.1
 device_type 0.0.3
 dsef 2024.4.9
 email 0.1.0
-E-Maj 4.3.1
+E-Maj 4.4.0
 explanation 0.3.0
 extension_drop 0.1.1
 file_fdw_program 1.0.1

@@ -171,9 +171,6 @@ sub unzip {
         if ($member->isSymbolicLink) {
             # Delete existing so Archive::Zip won't fail to create it.
             push @out => "WARNING: Cannot unlink $fn: $!" if -e $fn && !unlink $fn;
-        } else {
-            # Make sure the member is readable by everyone.
-            $member->unixFileAttributes( $member->isDirectory ? 0755 : 0644 );
         }
 
         if ($member->extractToFileNamed($fn) != AZ_OK) {
@@ -213,7 +210,11 @@ sub pgxs_build {
     my @vars = ("PG_CONFIG=$self->{pg_config}");
     return unless $self->_run($rec, 'make', qw(make), @vars);
     return unless $self->_run($rec, 'make install', qw(make install), @vars);
-    return unless $self->_run($rec, 'make installcheck', qw(make installcheck), @vars);
+
+    # Only run `installcheck` if it appears to exist.
+    return unless $self->try_regress($rec);
+
+    # Mark success.
     $rec->{success} = JSON::true;
 }
 
@@ -265,34 +266,47 @@ sub pgrx_build {
         qw(cargo pgrx install --test --pg-config), $self->{pg_config},
     );
 
-    my $file = 'Makefile';
-    if (-e $file) {
-        # Look for signs of installcheck in the Makefile.
-        open my $fh, '<:raw', $file or die "Cannot open $file: $!\n";
-        my $regress;
-        while (<$fh>) {
-            next unless /^REGRESS\s*=/ || /^installcheck:/;
-            $regress = 1;
-            last;
-        }
-        close $fh;
+    # Only run `installcheck` if it appears to exist.
+    return unless $self->try_regress($rec);
 
-        if ($regress) {
-            my @vars = ("PG_CONFIG=$self->{pg_config}");
-            $self->_run(
-                $rec, 'make installcheck', qw(make installcheck), @vars,
-            ) || do {
-                # Try to find regression.diffs.
-                $self->_run(
-                    $rec, 'cat regressin.diffs',
-                    qw(find . -name regression.diffs -exec cat {} +),
-                );
-                return;
-            };
-        }
-    }
-
+    # Mark success.
     $rec->{success} = JSON::true;
+}
+
+sub try_regress {
+    my ($self, $rec) = @_;
+    my $file = 'Makefile';
+
+    # Return success if there is no Makefile.
+    return 1 unless -e $file;
+
+    # Look for signs of installcheck in the Makefile.
+    open my $fh, '<:raw', $file or die "Cannot open $file: $!\n";
+    my $regress;
+    while (<$fh>) {
+        next unless /^REGRESS\s*=/ || /^installcheck:/;
+        $regress = 1;
+        last;
+    }
+    close $fh;
+
+    # Return success if we found no installcheck target.
+    return 1 unless $regress;
+
+    # Run installcheck.
+    return 1 if $self->_run(
+        $rec, 'make installcheck', qw(make installcheck),
+        "PG_CONFIG=$self->{pg_config}",
+    );
+
+    # Failed. Try to find regression.diffs.
+    $self->_run(
+        $rec, 'cat regression.diffs',
+        qw(find . -name regression.diffs -exec cat {} +),
+    );
+
+    # Return false.
+    return;
 }
 
 sub _run {
