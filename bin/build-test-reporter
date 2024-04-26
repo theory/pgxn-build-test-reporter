@@ -332,19 +332,34 @@ sub try_regress {
 sub _run {
     my ($self, $rec, $name, @cmd) = @_;
     $self->status(2,  "### $rec->{package}: $name");
+    my $pipe = gensym;
+    local $@;
     my $time = [gettimeofday];
-    run \@cmd, \undef, '>pipe', (my $pipe = gensym), '2>&1';
+    my $exit = -1;
+
+    eval {
+        # Let the command run for up to 5m
+        local $SIG{ALRM} = sub { die "alarm\n" };
+        alarm 300;
+        run \@cmd, \undef, '>pipe', $pipe, '2>&1';
+        $exit = $?;
+        alarm 0;
+    };
+
+    # Record the outcome.
+    my $err = $@;
     push @{ $rec->{steps} } => {
         name     => $name,
         command  => \@cmd,
         duration => tv_interval($time),
-        exit     => $? >> 8,
+        exit     => $exit >> 8,
         output   => [ map { chomp; s/\e\[[0-9;]*m//g; $_ } <$pipe> ],
     };
 
-    return 1 if $? == 0;
-    $self->status(2, "### $rec->{package}: $name failed");
-    $rec->{reason} = "$name failed";
+    return 1 if $exit == 0;
+    my $reason = $err ? 'timed out' : 'failed';
+    $self->status(2, "### $rec->{package}: $name $reason");
+    $rec->{reason} = "$name $reason";
     return 0;
 }
 
