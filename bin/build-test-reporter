@@ -21,6 +21,7 @@ use File::Path qw(make_path remove_tree);
 use File::Basename;
 use Parallel::WorkUnit;
 use File::Temp;
+use Time::HiRes qw(gettimeofday tv_interval);
 use POSIX qw(strftime);
 use Archive::Zip qw(:ERROR_CODES);
 
@@ -113,13 +114,14 @@ sub pgxn_build {
     };
 
     my $rec = {
-        package  => $name,
-        version  => $version,
-        os       => $^O,
-        postgres => $self->{pg_version},
-        arch     => $Config::Config{myarchname},
-        success  => JSON::false,
-        steps    => [],
+        package   => $name,
+        version   => $version,
+        os        => $^O,
+        postgres  => $self->{pg_version},
+        arch      => $Config::Config{myarchname},
+        success   => JSON::false,
+        timestamp => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime),
+        steps     => [],
     };
 
     my $file = basename $dist->download_path;
@@ -147,13 +149,14 @@ sub unzip {
     my @out = ("Archive:  $zip_path");
     Archive::Zip::setErrorHandler(sub { push @out, map { chomp; $_ } @_ });
     my $step = {
-        name    => "unzip $zip_path",
-        command => ['Archive::Zip->new->read($zip_path)'],
+        name    => "unzip",
+        command => ['unzip', $zip_path],
         exit    => 1,
         output  => \@out,
     };
     push @{ $rec->{steps} } => $step;
 
+    my $time = [gettimeofday];
     my $zip = Archive::Zip->new;
     if ($zip->read($zip_path)!= AZ_OK) {
         $rec->{reason} = "Error reading $zip_path";
@@ -176,12 +179,14 @@ sub unzip {
 
         if ($member->extractToFileNamed($fn) != AZ_OK) {
             $rec->{reason} = "Error extracting $fn";
+            $step->{duration} = tv_interval $time;
             return;
         }
     }
 
     # Success.
     $step->{exit} = 0;
+    $step->{duration} = tv_interval $time;
 
     return 1;
 }
@@ -314,12 +319,14 @@ sub try_regress {
 sub _run {
     my ($self, $rec, $name, @cmd) = @_;
     $self->status(2,  "### $rec->{package}: $name");
+    my $time = [gettimeofday];
     run \@cmd, \undef, '>pipe', (my $pipe = gensym), '2>&1';
     push @{ $rec->{steps} } => {
-        name    => $name,
-        command => \@cmd,
-        exit    => $? >> 8,
-        output  => [ map { chomp; s/\e\[[0-9;]*m//g; $_ } <$pipe> ],
+        name     => $name,
+        command  => \@cmd,
+        duration => tv_interval($time),
+        exit     => $? >> 8,
+        output   => [ map { chomp; s/\e\[[0-9;]*m//g; $_ } <$pipe> ],
     };
 
     return 1 if $? == 0;

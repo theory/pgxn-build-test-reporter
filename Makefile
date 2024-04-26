@@ -1,4 +1,4 @@
-dependencies: cpanfile
+cpan-deps: cpanfile
 	@cpanm --installdeps --notest .
 
 run: bin/build-test-reporter
@@ -10,4 +10,4 @@ load: sql/load.sql $(wildcard data/*.log)
 debian-deps:
 	@sudo apt-get update
 	@sudo apt-get install -y cpanminus libnet-ssleay-perl
-	sudo $(MAKE) dependencies
+	sudo $(MAKE) cpan-deps

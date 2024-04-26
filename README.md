@@ -83,6 +83,8 @@ SELECT result->>'arch' AS arch,
  ORDER BY package;
  ```
 
+## Show Failed Packages For Command and Architecture
+
 ``` sql
 SELECT result->>'package' AS package
   FROM builds
@@ -90,7 +92,5 @@ SELECT result->>'package' AS package
    AND result->>'arch' = 'aarch64-linux'
  ORDER BY package;
 ```
-
-
 
   [connection environment variables]: https://www.postgresql.org/docs/current/libpq-envars.html
