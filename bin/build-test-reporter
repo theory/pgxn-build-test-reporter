@@ -99,21 +99,25 @@ sub go {
         chomp;
         my ($name, $version) = split /\s+/;
         die "Error parsing $_\n" unless $name && $version;
-        $p->queue(sub { $self->pgxn_build($name, $version) }, $callback);
+        $p->queue(
+            sub {
+                # Record interrupted children.
+                $SIG{TERM} = $SIG{INT} = sub {
+                    $self->status(1, "$name $version interrupted");
+                    exit;
+                 };
+                $self->pgxn_build($self->make_rec($name, $version));
+            },
+            $callback
+        );
     }
 
     $p->waitall;
 }
 
-sub pgxn_build {
+sub make_rec {
     my ($self, $name, $version) = @_;
-    $self->status(1, "## Build $name $version");
-    my $dist = $self->{pgxn}->get_distribution($name, $version) or do {
-        $self->status(0, "### Cannot find $name $version on PGXN; skipping");
-        return;
-    };
-
-    my $rec = {
+    return {
         package   => $name,
         version   => $version,
         os        => $^O,
@@ -122,6 +126,15 @@ sub pgxn_build {
         success   => JSON::false,
         timestamp => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime),
         steps     => [],
+    };
+}
+
+sub pgxn_build {
+    my ($self, $rec) = @_;
+    my ($name, $version) = @{$rec}{qw(package version)};
+    my $dist = $self->{pgxn}->get_distribution($name, $version) or do {
+        $self->status(0, "### Cannot find $name $version on PGXN; skipping");
+        return;
     };
 
     my $file = basename $dist->download_path;
