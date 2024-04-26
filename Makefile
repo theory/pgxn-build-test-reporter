@@ -6,3 +6,8 @@ run: bin/build-test-reporter
 
 load: sql/load.sql $(wildcard data/*.log)
 	@psql -f $<
+
+debian-deps:
+	@sudo apt-get update
+	@sudo apt-get install -y cpanminus libnet-ssleay-perl
+	sudo $(MAKE) dependencies

@@ -20,7 +20,7 @@ cert 0.1.0
 check_digits 0.3.3
 check_updates 1.0.1
 citext 2.0.2
-citus 12.1.2
+citus 12.1.3
 colnames 1.7.0
 colors 0.0.1
 complex 0.5.0
@@ -41,6 +41,7 @@ datasketches 1.7.0
 db2_fdw 6.0.1
 db_info 0.1.0
 dbpatch 1.3.0
+DBT-2 0.61.2
 ddlx 0.27.0
 debversion 1.1.1
 device_type 0.0.3
@@ -109,7 +110,7 @@ loglog_estimator 1.2.4
 lostgis 1.0.2
 lower_quantile 1.0.0
 lsm3 0.1.3
-madlib 1.20.0
+madlib 2.1.0
 mapcode 0.0.5
 md5hash 1.0.1
 metagration 1.0.4
@@ -254,7 +255,7 @@ pg_stat_monitor 1.1.0
 pg_statsd 0.1.4
 pg_statviz 0.6.0
 pgTAP 1.3.3
-pg_task 2.1.2
+pg_task 2.1.3
 pgtelemetry 1.6.0
 pg_text_semver 1.2.1
 pg_thud 0.1.0
@@ -288,6 +289,7 @@ PostgreSQL_Faker 0.5.3
 powa 4.2.2
 prioritize 1.0.4
 probabilistic_estimator 1.3.3
+prometheus_fdw 0.1.5
 psl 1.0.0
 Pyrseas 0.10.0
 Qgres 0.1.2
@@ -354,7 +356,7 @@ validadores 0.0.2
 variant 1.0.1
 varint 0.1.0
 vector 0.6.2
-vectorize 0.14.2
+vectorize 0.15.0
 veil2 0.9.3
 VOPS 2.0.1
 weighted_mean 1.0.1

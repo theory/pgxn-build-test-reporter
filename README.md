@@ -33,10 +33,18 @@ make load
 ### Report Outcomes
 
 ``` sql
-SELECT COUNT(*), COALESCE(result->>'reason', 'Success') AS outcome
+SELECT COUNT(*), result->>'arch' AS arch, COALESCE(result->>'reason', 'Success') AS outcome
   FROM builds
- GROUP BY outcome
- ORDER BY count;
+ GROUP BY arch, outcome
+ ORDER BY arch, count;
+```
+
+### Show Build for Reason
+
+``` sql
+SELECT result->>'package'
+FROM builds
+WHERE result->>'reason' = 'cargo pgrx init failed';
 ```
 
 ### Show Failed Command
@@ -53,6 +61,34 @@ SELECT jsonb_pretty(jsonb_path_query(result, '$.steps[last]'))
   FROM builds
  WHERE result->>'package' = 'pg_later';
 SQL
+```
+
+### Show pgrx Outcomes
+
+```sql
+SELECT result->>'arch' AS arch,
+       result->>'package' AS package,
+       COALESCE(result->>'reason', 'Success') AS outcome
+ FROM builds
+WHERE result->>'pipeline' = 'pgrx';
+```
+
+## Show Failed Packages For Command
+
+``` sql
+SELECT result->>'arch' AS arch,
+       result->>'package' AS package
+  FROM builds
+ WHERE result->>'reason' = 'make failed'
+ ORDER BY package;
+ ```
+
+``` sql
+SELECT result->>'package' AS package
+  FROM builds
+ WHERE result->>'reason' = 'make failed'
+   AND result->>'arch' = 'aarch64-linux'
+ ORDER BY package;
 ```
 
 
