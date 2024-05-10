@@ -357,7 +357,7 @@ sub _run {
     };
 
     return 1 if $exit == 0;
-    my $reason = $err ? 'timed out' : 'failed';
+    my $reason = $err && $err eq "alarm\n" ? 'timed out' : 'failed';
     $self->status(2, "### $rec->{package}: $name $reason");
     $rec->{reason} = "$name $reason";
     return 0;
