@@ -20,6 +20,21 @@ and write out a report in the `data` directory.
 make run
 ```
 
+In Docker:
+
+``` sh
+docker run -it --rm -v "$PWD:/repo" --platform linux/amd64 -w /repo pgxn/pgxn-tools bash
+make debian-deps
+pg-start 16
+make run
+```
+
+Build only specific distributions:
+
+``` sh
+bin/build-test-reporter -v --dist pgtap --dist jsonschema
+```
+
 ## Load Results
 
 Set [connection environment variables] and run:

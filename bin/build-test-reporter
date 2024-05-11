@@ -38,6 +38,7 @@ sub new {
         input_file => 'data/distributions.txt',
         work_dir   => 'work',
         verbose    => 1,
+        dists      => [],
         pg_config  => $ENV{PG_CONFIG},
         lock_file  => File::Temp->new,
         pgxn       => WWW::PGXN->new(url => 'https://api.pgxn.org/'),
@@ -47,6 +48,7 @@ sub new {
         'input-file|in=s'   => \$self->{input_file},
         'output-file|out=s' => \$self->{output_file},
         'work-dir|dir=s'    => \$self->{work_dir},
+        'dist=s@'           => \$self->{dists},
         'verbose|v+'        => \$self->{verbose},
     ) or die "Usage: $0 --in INPUT_FILE --out OUTPUT_FILE\n";
 
@@ -54,6 +56,7 @@ sub new {
     $self->status(2, "## Using $self->{pg_config}");
 
     $self->{pg_version} = _pg_version($self->{pg_config});
+    $self->{pg_owner} = _pg_owner($self->{pg_config});
     $self->status(2, "## Using PostgreSQL $self->{pg_version}\n");
 
     # Set up the default output file.
@@ -94,6 +97,7 @@ sub go {
         $self->status(1, "## $rec->{package} " . ($rec->{success} ? "ok" : "not ok"));
     };
     my $p = Parallel::WorkUnit->new(max_children => 16);
+    my %dists = map { lc $_ => 1 } @{ $self->{dists} };
 
     while (<$in>) {
         chomp;
@@ -109,7 +113,7 @@ sub go {
                 $self->pgxn_build($self->make_rec($name, $version));
             },
             $callback
-        );
+        ) if !%dists || $dists{lc $name};
     }
 
     $p->waitall;
@@ -257,6 +261,7 @@ sub pgrx_build {
         $rec->{reason} = "pgrx not found in Cargo.toml";
         return $rec;
     };
+
     $pgrxv =~ s/^=//;
 
     return unless $self->_run(
@@ -269,21 +274,36 @@ sub pgrx_build {
         qw(cargo pgrx init), "--pg$self->{pg_version}=$self->{pg_config}",
     );
 
-    return unless $self->_run(
-        $rec, 'cargo pgrx package',
-        qw(cargo pgrx package --test --pg-config), $self->{pg_config},
-    );
-
-    return unless $self->_run(
-        $rec, 'cargo test',
-        qw(cargo pgrx test --all --no-default-features --features),
-        "pg$self->{pg_version} pg_test", qw(-- --nocapture),
-    );
-
+    # Must come before test: https://github.com/pgcentralfoundation/pgrx/issues/1670
     return unless $self->_run(
         $rec, 'cargo pgrx install',
-        qw(cargo pgrx install --test --pg-config), $self->{pg_config},
+        qw(cargo pgrx install --sudo --test --pg-config), $self->{pg_config},
     );
+
+    if ($< != 0 && $self->{pg_owner} == $<) {
+        # Curent user is not root and owns Postgres, just run the tests.
+        return unless $self->_run(
+            $rec, 'cargo pgrx test',
+            qw(cargo pgrx test), "pg$self->{pg_version}",
+        );
+    } else {
+        # Make sure we support this version of pgrx.
+        my @v = split /[.]/ => $pgrxv, 3;
+        die "Invalid pgrx version '$pgrxv'\n" unless @v == 3;
+        $v[2] =~ s/\D+//g;
+        if ($v[0] > 0 || $v[1] > 11 || ($v[1] == 11 && $v[2] > 3)) {
+            # 0.11.4 gives us --runas and --pgdata. As long as the current
+            # user has `sudo` privileges we can run the tests.
+            my $datadir = File::Temp->newdir(PERMS => 0777);
+            return unless $self->_run(
+                $rec, 'cargo pgrx test',
+                qw(cargo pgrx test --runas postgres --pgdata), $datadir->dirname,
+                "pg$self->{pg_version}",
+            );
+        } else {
+            $self->status(2,  "### $rec->{package}: skipping tests on pgrx $pgrxv");
+        }
+    }
 
     # Only run `installcheck` if it appears to exist.
     return unless $self->try_regress($rec);
@@ -374,4 +394,12 @@ sub _pg_version {
     run [$pg_config, '--version'], \undef, \my $out or exit $? >> 8;
     $out =~ /(\d+)/ or die "No version found in $pg_config --version output:\n$out";
     return $1;
+}
+
+sub _pg_owner {
+    my $pg_config = shift;
+    run [$pg_config, '--sharedir'], \undef, \my $out or exit $? >> 8;
+    chomp $out;
+    my @s = stat $out;
+    return $s[4];
 }
